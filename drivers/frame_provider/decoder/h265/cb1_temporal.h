@@ -61,9 +61,14 @@ struct cb1t_ctx {
 	s64 lookahead;  /* ticks of lookahead, CONFIRM..1 s, kept across resets */
 	s64 rise_lead;  /* ticks of lookahead allowed to raise L1 max, 0..1 s */
 	u32 rise_rate;  /* max L1 max rise inside a shot, 12-bit codes per second, 0 = unlimited */
+	s64 open;       /* ticks after a cut whose pictures raise L1 max from the cut on, 0 = off */
+	u32 max_hyst;   /* in-shot L1 max rises smaller than this are not followed, 12-bit codes */
+	u32 avg_hyst;   /* in-shot L1 avg follows the baseline at this distance, 12-bit codes, 0 = off */
+	u32 cut_hyst;   /* L1 max is held across a cut when the new shot is within this, 12-bit codes, 0 = off */
 	bool ramp_valid;
 	s64 ramp_pts, ramp_scene;
 	u64 ramp_q;     /* last output L1 max, 12-bit codes x CB1T_HZ */
+	u64 avg_q;      /* last output L1 avg, 12-bit codes x CB1T_HZ */
 	u16 history_low, history_high;
 	u64 history_energy, history_mass;
 };
@@ -82,6 +87,26 @@ void cb1t_set_rise_lead(struct cb1t_ctx *ctx, s64 ticks);
  * (0 = unlimited = the original). A cut, a fall or a pts going back resets it.
  */
 void cb1t_set_rise_rate(struct cb1t_ctx *ctx, u32 codes_per_s);
+/*
+ * Shot opening window in ticks, 0..1 s (0 = off): pictures of the shot's first
+ * `open` ticks that the lookahead already shows count for L1 max from the cut
+ * on, so the rise lands on the cut instead of inside the shot.
+ */
+void cb1t_set_open(struct cb1t_ctx *ctx, s64 ticks);
+/*
+ * In-shot dead bands, 12-bit PQ codes (0 = off = the original): L1 max stays
+ * up to max_hyst under its baseline, L1 avg within avg_hyst of its baseline.
+ * A cut resets both to the baseline.
+ */
+void cb1t_set_max_hyst(struct cb1t_ctx *ctx, u32 codes);
+void cb1t_set_avg_hyst(struct cb1t_ctx *ctx, u32 codes);
+/*
+ * Shot-to-shot dead band of L1 max, 12-bit PQ codes (0 = off = the original):
+ * a cut whose new baseline is within cut_hyst of the output keeps the output,
+ * so consecutive shots of one scene share a curve. The output may then sit up
+ * to cut_hyst above or under the baseline for the whole shot.
+ */
+void cb1t_set_cut_hyst(struct cb1t_ctx *ctx, u32 codes);
 /* Push pictures in display order; picture ids strictly increase. */
 enum cb1t_status cb1t_push(struct cb1t_ctx *ctx, const struct cb1t_frame *d,
 			   const u16 motion[CB1T_MOTION], u64 picture);

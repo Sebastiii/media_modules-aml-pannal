@@ -10089,6 +10089,34 @@ MODULE_PARM_DESC(cb1_rise_ms, "\n cb1: ms ahead a brighter picture may raise L1 
 static u32 cb1_rise_rate = 75;
 module_param(cb1_rise_rate, uint, 0664);
 MODULE_PARM_DESC(cb1_rise_rate, "\n cb1: max L1 max rise inside a shot, 12-bit codes/s (0 = unlimited)\n");
+
+/*
+ * In-shot stability (0 = off): a move of L1 is hidden at a cut and visible
+ * inside a shot. cb1_open_ms: what the lookahead shows of the first ms of a
+ * shot raises L1 max from the cut on. cb1_max_hyst / cb1_avg_hyst: dead bands
+ * in 12-bit codes, L1 max stays up to max_hyst under its baseline, L1 avg
+ * follows its baseline at avg_hyst.
+ */
+static u32 cb1_open_ms = 1000;
+module_param(cb1_open_ms, uint, 0664);
+MODULE_PARM_DESC(cb1_open_ms, "\n cb1: ms after a cut that raise L1 max from the cut on (0 = off)\n");
+
+static u32 cb1_max_hyst = 48;
+module_param(cb1_max_hyst, uint, 0664);
+MODULE_PARM_DESC(cb1_max_hyst, "\n cb1: in-shot L1 max rises under this are not followed, 12-bit codes\n");
+
+static u32 cb1_avg_hyst = 16;
+module_param(cb1_avg_hyst, uint, 0664);
+MODULE_PARM_DESC(cb1_avg_hyst, "\n cb1: in-shot L1 avg dead band, 12-bit codes (0 = off)\n");
+
+/*
+ * Shot-to-shot dead band of L1 max (0 = off): a cut whose new baseline is
+ * within cb1_cut_hyst 12-bit codes of the current output keeps the output, so
+ * consecutive shots of one scene share a curve.
+ */
+static u32 cb1_cut_hyst = 48;
+module_param(cb1_cut_hyst, uint, 0664);
+MODULE_PARM_DESC(cb1_cut_hyst, "\n cb1: shot-to-shot L1 max dead band, 12-bit codes (0 = off)\n");
 #define CB1_LA_WARM (2 * CB1T_HZ)
 #define CB1_LA_TOL  (CB1T_HZ / 1000)
 
@@ -10466,6 +10494,10 @@ static void cb1_measure_vf(struct hevc_state_s *hevc, struct vframe_s *vf)
 	cb1t_set_lookahead(&s->ctx, cb1_lookahead(hevc, s, vf->duration, d.pts));
 	cb1t_set_rise_lead(&s->ctx, (s64)cb1_rise_ms * CB1T_HZ / 1000);
 	cb1t_set_rise_rate(&s->ctx, cb1_rise_rate);
+	cb1t_set_open(&s->ctx, (s64)cb1_open_ms * CB1T_HZ / 1000);
+	cb1t_set_max_hyst(&s->ctx, cb1_max_hyst);
+	cb1t_set_avg_hyst(&s->ctx, cb1_avg_hyst);
+	cb1t_set_cut_hyst(&s->ctx, cb1_cut_hyst);
 	st = cb1t_push(&s->ctx, &d, s->motion, s->pushed + 1);
 	if (st == CB1T_INVALID && s->pushed) {
 		/* seek / pts going back: restart the temporal state */

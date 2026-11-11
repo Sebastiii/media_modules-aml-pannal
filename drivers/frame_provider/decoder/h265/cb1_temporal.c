@@ -120,26 +120,76 @@ void cb1t_set_rise_rate(struct cb1t_ctx *ctx, u32 codes_per_s)
 	ctx->rise_rate = codes_per_s > 4095 ? 4095 : codes_per_s;
 }
 
+void cb1t_set_open(struct cb1t_ctx *ctx, s64 ticks)
+{
+	ctx->open = ticks < 0 ? 0 : ticks > SEC ? SEC : ticks;
+}
+
+void cb1t_set_max_hyst(struct cb1t_ctx *ctx, u32 codes)
+{
+	ctx->max_hyst = codes > 4095 ? 4095 : codes;
+}
+
+void cb1t_set_avg_hyst(struct cb1t_ctx *ctx, u32 codes)
+{
+	ctx->avg_hyst = codes > 4095 ? 4095 : codes;
+}
+
+void cb1t_set_cut_hyst(struct cb1t_ctx *ctx, u32 codes)
+{
+	ctx->cut_hyst = codes > 4095 ? 4095 : codes;
+}
+
 /*
- * Inside one shot the baseline max only grows; a large step dims the mids
- * visibly even when it lands with the highlight. Spread it at rise_rate:
- * the output max climbs toward the baseline, avg stays below it.
+ * Output stage: a jump is free at a cut, any move inside a shot can be seen.
+ * - max: the baseline only grows inside a shot; a large step dims the mids
+ *   visibly even when it lands with the highlight, so it is spread at
+ *   rise_rate, and a rise smaller than max_hyst is not followed at all (the
+ *   output stays up to max_hyst under the baseline).
+ *   A cut between two shots of one scene shows too when the curve jumps on
+ *   it: a new baseline within cut_hyst of the output keeps the output, and
+ *   the shot then stays inside that band (above or under its baseline).
+ * - avg: the baseline is a running mean that drifts on every picture; the
+ *   output follows it at a distance of avg_hyst (backlash), so a steady trend
+ *   passes through smoothly and jitter does not.
  */
 static void ramp(struct cb1t_ctx *ctx, struct cb1t_result *r)
 {
-	u64 target = r->l1[2], allowed;
+	u64 target = (u64)r->l1[2] * CB1T_HZ, avg = (u64)r->l1[1] * CB1T_HZ;
+	u64 max_h = (u64)ctx->max_hyst * CB1T_HZ, avg_h = (u64)ctx->avg_hyst * CB1T_HZ;
+	u64 cut_h = (u64)ctx->cut_hyst * CB1T_HZ;
 	s64 scene = ctx->active_cut;
+	bool fresh = !ctx->ramp_valid || scene != ctx->ramp_scene || r->pts <= ctx->ramp_pts;
 
-	if (!ctx->rise_rate || !ctx->ramp_valid || scene != ctx->ramp_scene ||
-	    r->pts <= ctx->ramp_pts || target * CB1T_HZ <= ctx->ramp_q) {
-		ctx->ramp_q = target * CB1T_HZ;
-	} else {
-		allowed = ctx->ramp_q + (u64)ctx->rise_rate * (u64)(r->pts - ctx->ramp_pts);
-		ctx->ramp_q = allowed < target * CB1T_HZ ? allowed : target * CB1T_HZ;
+	bool restart = !ctx->ramp_valid || r->pts <= ctx->ramp_pts;
+
+	if (cut_h && !restart && target <= ctx->ramp_q + cut_h && ctx->ramp_q <= target + cut_h) {
+		/* inside the band, at a cut or in the shot: hold */
 		r->l1[2] = div64_u64(ctx->ramp_q, CB1T_HZ);
-		if (r->l1[1] > r->l1[2] - 1)
-			r->l1[1] = r->l1[2] - 1;
+	} else if (fresh || target <= ctx->ramp_q) {
+		ctx->ramp_q = target;
+	} else {
+		u64 follow = target > max_h ? target - max_h : 0;
+
+		if (follow > ctx->ramp_q) {
+			u64 allowed = ctx->ramp_q +
+				(u64)ctx->rise_rate * (u64)(r->pts - ctx->ramp_pts);
+
+			ctx->ramp_q = ctx->rise_rate && allowed < follow ? allowed : follow;
+		}
+		r->l1[2] = div64_u64(ctx->ramp_q, CB1T_HZ);
 	}
+	if (fresh || !avg_h) {
+		ctx->avg_q = avg;
+	} else {
+		if (avg > ctx->avg_q + avg_h)
+			ctx->avg_q = avg - avg_h;
+		else if (avg + avg_h < ctx->avg_q)
+			ctx->avg_q = avg + avg_h;
+		r->l1[1] = div64_u64(ctx->avg_q, CB1T_HZ);
+	}
+	if (r->l1[1] > r->l1[2] - 1)
+		r->l1[1] = r->l1[2] - 1;
 	ctx->ramp_valid = true;
 	ctx->ramp_scene = scene;
 	ctx->ramp_pts = r->pts;
@@ -367,7 +417,13 @@ enum cb1t_status cb1t_poll(struct cb1t_ctx *ctx, u64 picture, struct cb1t_result
 	memset(&result, 0, sizeof(result));
 	result.pts = pts;
 	result.observed_until = ctx->samples[observed - 1].d.pts;
-	if (start >= end || !baseline(ctx, start, end, end < observed, pts + ctx->rise_lead, &result))
+	/*
+	 * Whatever the lookahead shows of the shot's first `open` ticks raises
+	 * max from the cut on, where the jump is hidden, instead of inside the shot.
+	 */
+	if (start >= end || !baseline(ctx, start, end, end < observed,
+				      s64_max(pts + ctx->rise_lead, ctx->active_cut +
+					      s64_min(ctx->open, ctx->lookahead)), &result))
 		return CB1T_INVALID;
 	ramp(ctx, &result);
 
